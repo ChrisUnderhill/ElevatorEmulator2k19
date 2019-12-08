@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.15.1/dist/phaser-arcade-physics.min.js"></script>
+</head>
+<body>
+
+<script>
+    (function(){Math.clamp=function(a,b,c){return Math.max(b,Math.min(c,a));}})();
+
+    Array.prototype.remove = function() {
+        var what, a = arguments, L = a.length, ax;
+        while (L && this.length) {
+            what = a[--L];
+            while ((ax = this.indexOf(what)) !== -1) {
+                this.splice(ax, 1);
+            }
+        }
+        return this;
+    };
+
+    var config = {
+        type: Phaser.CANVAS,
+        width: 800,
+        height: 600,
+        physics: {
+            default: 'arcade',
+            arcade: {
+                gravity: { y: 0 }
+            }
+        },
+        scene: {
+            preload: preload,
+            create: create,
+            update: update
+        }
+    };
+
+    var game = new Phaser.Game(config);
+
+    var people = [];
+    var officeBounds = {};
+    var THIS;
+    var lifts;
+
+    function preload ()
+    {
+        this.load.setBaseURL('http://labs.phaser.io');
+
+        this.load.image('sky', 'assets/skies/space3.png');
+        this.load.image('logo', 'assets/sprites/phaser3-logo.png');
+        this.load.image('red', 'assets/particles/red.png');
+    }
+
+    function pickupPeople (lift, people, isAI=false){
+        if (lift.state.capacity > 0){
+            const res = people.filter(el => el.floor === lift.state.floor);
+            if (res.length > 0){
+                lift.isAnimating = true;
+                res.forEach((el, index) => {
+                    if (lift.state.capacity > 0) {
+                        var p = el;
+                        people = people.remove(el);
+                        p.art.tweens = [];
+                        movePersonTo(locateFloor(lift.state.floor, lift.state.shaft, officeBounds), 500, p.art, THIS, easing = 'Linear.easeIn', null, delay = 0, onComplete = () => lift.isAnimating=false);
+                        lift.peopleInside.push(p);
+                        lift.state.capacity -= 1;
+                    }
+                })
+            }
+        }
+    }
+
+    function dropoffPeople (lift){
+        const res = lift.peopleInside.filter(el => el.desiredFloor === lift.state.floor);
+        if (res.length > 0) {
+            res.forEach((el, index) => {
+                var p = el;
+                lift.peopleInside = lift.peopleInside.remove(el);
+                p.art.tweens = [];
+                complete = () =>{ p.art.destroy()};
+                movePersonTo(locateFloor(lift.state.floor, 10, officeBounds, false), 1000, p.art, THIS, easing = 'Linear.easeOut', null, delay = index * 100, onComplete=complete);
+                //console.log(p)
+                lift.state.capacity += 1;
+            })
+        }
+    }
+
+    function moveLiftTo (location, duration, item, THIS, easing = 'Sine', onComplete = null, isPlayer = true )
+    {
+        if (item.tweens.length > 0) {
+            easing = easing.concat(easing, '.easeOut')
+        } else {
+            easing = easing.concat(easing, '.easeInOut')
+        }
+
+        if (isPlayer && ! item.isAnimating) {
+            var tween = THIS.tweens.add({
+                targets: [item].concat(item.peopleInside.map(el => el.art)),
+                props: {
+                    x: {value: location.x, duration: Math.max(duration / 10, 100), ease: 'Bounce.easeInOut'},
+                    y: {value: location.y, duration: duration, ease: easing}
+                },
+                onComplete: (onComplete !== null ? onComplete : function () {
+                        item.tweens.remove(tween);
+                        if (item.tweens.length === 0) {
+                            dropoffPeople(item, people);
+                            pickupPeople(item, people);
+                        }
+                    }
+                )
+            });
+            item.tweens.push(tween);
+        }
+
+    }
+
+    function movePersonTo (location, duration, item, THIS, easing = 'Linear.easeInOut', following = null, delay = 0, onComplete = null )
+    {
+        item.isAnimating = true;
+        var tween = THIS.tweens.add({
+            targets: item,
+            props: {
+                x: { value: location.x, duration: duration, ease: easing },
+                y: { value: location.y, duration: duration, ease: easing }
+            },
+            delay: delay,
+            onComplete: onComplete
+        });
+
+
+        item.tweens.push(tween);
+    }
+
+    function locateFloor(floor, shaft, officeBounds, clamp = true) {
+        if (clamp) {
+            floor = Math.clamp(floor, 0, officeBounds.numFloors);
+            shaft = Math.clamp(shaft, 0, officeBounds.numShafts);
+        }
+
+        var x = officeBounds.x[0] + officeBounds.xstep * shaft;
+        var y = officeBounds.y[1] - (officeBounds.ystep * floor);
+        return {x: x, y: y}
+    }
+
+    function createPersonOnFloor(floor, desiredFloor, people){
+        let personWidth = 10;
+
+        const res = people.filter(el => el.floor === floor);
+        var person1loc = locateFloor(floor,5 + (res.length + 1), officeBounds, clamp = false);
+        var person1Art = THIS.add.circle( person1loc.x , person1loc.y, personWidth, Math.max(0x666666, 0xad96c1 * floor % 0xffffff) );
+        THIS.physics.add.existing(person1Art);
+        people.push( {floor: floor, desiredFloor: desiredFloor, isWaiting: true, isInLift: false, art: person1Art} )
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function update() {
+        var interestingFloors = people.map(el => el.floor);
+
+        var durationPerFloor = 100;
+        lifts.forEach( (lift, index) => {
+            if (lift.state.targetFloor < 0) {
+                lift.state.targetFloor = interestingFloors.pop();
+
+                if (lift.state.targetFloor === undefined){
+                    lift.state.targetFloor = Math.round(Math.random() * officeBounds.numFloors);
+                }
+                var duration = durationPerFloor * Math.abs(lift.state.targetFloor - lift.state.floor)
+                var complete = async () => {
+                    lift.state.floor = lift.state.targetFloor;
+                    dropoffPeople(lift, people);
+                    pickupPeople(lift, people);
+                    if (lift.peopleInside.length === 0 ){
+                        //lift.state.targetFloor = -1;
+                        return
+                    }
+                    lift.state.targetFloor = lift.peopleInside[0].desiredFloor;
+                    console.log("PICKED AND DROPPED PEOPLE. Going from", lift.state.floor, "to", lift.state.targetFloor);
+
+                    var duration2 = durationPerFloor * Math.abs(lift.state.targetFloor - lift.state.floor)
+                    var complete2 = () => {
+                        //console.log("ONCOMPLETE2", lift.state.targetFloor, lift.state.floor)
+                        lift.state.floor = lift.state.targetFloor;
+                        dropoffPeople(lift, people);
+                        pickupPeople(lift, people);
+                        lift.state.targetFloor = -1;
+                        console.log("PICKED AND DROPPED PEOPLE. Going from", lift.state.floor, "to", lift.state.targetFloor);
+                    }
+                    while (lift.isAnimating){
+                        await sleep(50)
+                    }
+                    moveLiftTo(locateFloor(lift.state.targetFloor, lift.state.shaft, officeBounds), duration2, lift, THIS, easing='Linear', onComplete = complete2)
+                    //console.log("MOVED");
+                }
+                moveLiftTo(locateFloor(lift.state.targetFloor, lift.state.shaft,officeBounds), duration, lift, THIS, easing='Linear', onComplete = complete)
+            }
+            else if (! lift.isAnimating){
+
+            }
+            }
+        )
+    }
+
+    function create ()
+    {
+        THIS = this;
+
+        this.add.image(400, 300, 'sky');
+
+        var particles = this.add.particles('red');
+
+        var emitter = particles.createEmitter({
+            speed: 100,
+            scale: { start: 1, end: 0 },
+            blendMode: 'ADD'
+        });
+
+        officeBounds = {x: [100,300], y:[100,500], numShafts: 4, numFloors:10};
+
+        officeBounds.xstep = (officeBounds.x[1] - officeBounds.x[0]) / officeBounds.numShafts;
+        officeBounds.ystep = (officeBounds.y[1] - officeBounds.y[0]) / officeBounds.numFloors;
+        var liftTargetState = {floor: 5, shaft: 3, capacity: 4};
+        var liftTargetPos = locateFloor(liftTargetState.floor, liftTargetState.shaft, officeBounds);
+
+        people = [];
+
+        // var logo = this.physics.add.image(liftTargetPos.x, liftTargetPos.y, 'logo');
+        var superLift = this.add.rectangle(liftTargetPos.x, liftTargetPos.y, officeBounds.xstep * 0.9, officeBounds.ystep * 0.9, 0xff0000);
+        //var logo = this.add.rectangle(100, 100, 100, 100, 0xffffff);
+        this.physics.add.existing(superLift);
+        superLift.isAnimating = false;
+        superLift.tweens = [];
+        superLift.state = liftTargetState;
+        superLift.peopleInside = []
+
+        lifts = [];
+
+        for (i=0; i<officeBounds.numShafts; i++){
+            var l = {};
+            l.state = {floor: 1, shaft: i, capacity: 1, targetFloor: -1};
+
+            l.pos = locateFloor(l.state.floor, l.state.shaft, officeBounds);
+
+            l = this.add.rectangle(l.pos.x, l.pos.y, officeBounds.xstep * 0.9, officeBounds.ystep * 0.9, 0xff0000 >> i);
+            l.isAnimating = false;
+            l.tweens = [];
+            l.state = {floor: 1, shaft: i, capacity: 1, targetFloor: -1};
+            l.peopleInside = [];
+
+            lifts.push(l);
+        }
+
+        for (i=0; i<4; i++) {
+            createPersonOnFloor(i+6, 5, people)
+            // var person1loc = locateFloor(i+5,5,officeBounds);
+            // var person1Art = this.add.circle( person1loc.x + officeBounds.xstep, person1loc.y, 10, Math.max(0x444444, 0xad96c1 * i % 0xffffff) );
+            // this.physics.add.existing(person1Art);
+            // people.push( {floor: i+5, desiredFloor: 5, isWaiting: true, isInLift: false, art: person1Art} )
+        }
+        for (i=0; i<2; i++) {
+            createPersonOnFloor(i+7, 3, people)
+        }
+        createPersonOnFloor(6,2,people);
+        createPersonOnFloor(6,1,people);
+
+
+
+
+        this.input.keyboard.on("keydown", function(e) {
+            if (superLift.isAnimating===false) {
+                var duration = 200;
+
+                if (e.key == "ArrowDown") {
+                    superLift.state.floor -= 1;
+                } else if (e.key == "ArrowUp") {
+                    superLift.state.floor += 1;
+                } else if (e.key == "ArrowLeft") {
+                    superLift.state.shaft -= 1;
+                } else if (e.key == "ArrowRight") {
+                    superLift.state.shaft += 1;
+                }
+                superLift.state.shaft = Math.clamp(superLift.state.shaft, 0, officeBounds.numShafts -1);
+                superLift.state.floor = Math.clamp(superLift.state.floor, 0, officeBounds.numFloors -1);
+                moveLiftTo(locateFloor(superLift.state.floor, superLift.state.shaft, officeBounds), duration, superLift, THIS);
+            }
+        })
+
+
+
+        // logo.setVelocity(0, 0);
+        // logo.setBounce(1, 1);
+        // logo.setCollideWorldBounds(true);
+
+        //emitter.startFollow(logo);
+    }
+</script>
+
+</body>
+</html>
